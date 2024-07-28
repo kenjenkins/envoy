@@ -339,16 +339,20 @@ private:
       return iterateLockHeld(fn);
     }
 
-    bool iterateLockHeld(const IterateFn<Counter>& fn) const {
+    bool iterateLockHeld(const IterateFn<Counter>& fn) const
+        ABSL_EXCLUSIVE_LOCKS_REQUIRED(parent_.lock_) {
       return iterHelper(fn, centralCacheLockHeld()->counters_);
     }
-    bool iterateLockHeld(const IterateFn<Gauge>& fn) const {
+    bool iterateLockHeld(const IterateFn<Gauge>& fn) const
+        ABSL_EXCLUSIVE_LOCKS_REQUIRED(parent_.lock_) {
       return iterHelper(fn, centralCacheLockHeld()->gauges_);
     }
-    bool iterateLockHeld(const IterateFn<Histogram>& fn) const {
+    bool iterateLockHeld(const IterateFn<Histogram>& fn) const
+        ABSL_EXCLUSIVE_LOCKS_REQUIRED(parent_.lock_) {
       return iterHelper(fn, centralCacheLockHeld()->histograms_);
     }
-    bool iterateLockHeld(const IterateFn<TextReadout>& fn) const {
+    bool iterateLockHeld(const IterateFn<TextReadout>& fn) const
+        ABSL_EXCLUSIVE_LOCKS_REQUIRED(parent_.lock_) {
       return iterHelper(fn, centralCacheLockHeld()->text_readouts_);
     }
     ThreadLocalStoreImpl& store() override { return parent_; }
@@ -415,13 +419,9 @@ private:
 
     StatName prefix() const override { return prefix_.statName(); }
 
-    // Returns the central cache, asserting that the parent lock is held.
-    //
-    // When a ThreadLocalStore method takes lock_ and then accesses
-    // scope->central_cache_, the analysis system cannot understand that the
-    // scope's parent_.lock_ is held, so we assert that here.
+    // Returns the central cache, provided that the parent lock is held.
     const CentralCacheEntrySharedPtr& centralCacheLockHeld() const
-        ABSL_ASSERT_EXCLUSIVE_LOCK(parent_.lock_) {
+        ABSL_EXCLUSIVE_LOCKS_REQUIRED(parent_.lock_) {
       return central_cache_;
     }
 
@@ -481,8 +481,11 @@ private:
 
   // The Store versions of iterate cover all the scopes in the store.
   template <class StatFn> bool iterHelper(StatFn fn) const {
-    return iterateScopes(
-        [fn](const ScopeImplSharedPtr& scope) -> bool { return scope->iterateLockHeld(fn); });
+    return iterateScopes([fn, this](const ScopeImplSharedPtr& scope)
+                             ABSL_EXCLUSIVE_LOCKS_REQUIRED(lock_) -> bool {
+                               assertParentLockHeld(scope.get());
+                               return scope->iterateLockHeld(fn);
+                             });
   }
 
   std::string getTagsForName(const std::string& name, TagVector& tags) const;
@@ -559,6 +562,14 @@ private:
   // (e.g. when a scope is deleted), it is likely more efficient to batch their
   // cleanup, which would otherwise entail a post() per histogram per thread.
   std::vector<uint64_t> histograms_to_cleanup_ ABSL_GUARDED_BY(hist_mutex_);
+
+  // When a ThreadLocalStore method takes lock_ and then accesses
+  // scope->central_cache_, the analysis system cannot understand that the
+  // scope's parent_.lock_ is held, so we assert that here.
+  void assertParentLockHeld(const ScopeImpl* scope) const ABSL_EXCLUSIVE_LOCKS_REQUIRED(lock_)
+      ABSL_ASSERT_EXCLUSIVE_LOCK(scope->parent_.lock_) {
+    ASSERT(&scope->parent_ == this);
+  }
 };
 
 using ThreadLocalStoreImplPtr = std::unique_ptr<ThreadLocalStoreImpl>;
